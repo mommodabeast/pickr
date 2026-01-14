@@ -19,7 +19,7 @@ final class TouchView: UIView {
     private var nextID = 0
     private var selectedFingerID: Int?
 
-    private var selectionTimer: Timer?
+    private var joinTimer: Timer?
     private var pulsePhase: CGFloat = 0
     private var pulseTimer: CADisplayLink?
     private var displayLink: CADisplayLink?
@@ -45,52 +45,65 @@ final class TouchView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     // MARK: Touches
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches {
+        guard fingers.count < 5 else { return }
+
+        for t in touches.prefix(5 - fingers.count) {
             fingers[t] = Finger(id: nextID, location: t.location(in: self))
             nextID += 1
         }
+
         selectedFingerID = nil
         stopPulse()
-        schedulePick()
+        maybeStartJoinTimer()
     }
+
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for t in touches {
-            fingers[t]?.location = t.location(in: self)
+            if var finger = fingers[t] {
+                finger.location = t.location(in: self)
+                fingers[t] = finger
+            }
         }
-        schedulePick()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches { fingers.removeValue(forKey: t) }
+        for t in touches {
+            fingers.removeValue(forKey: t)
+        }
+
         if fingers.isEmpty {
             selectedFingerID = nil
             stopPulse()
             rippleCenter = nil
+            joinTimer?.invalidate()
+            joinTimer = nil
         }
-        schedulePick()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchesEnded(touches, with: event)
     }
 
-    // MARK: Picking
-    private func schedulePick() {
-        selectionTimer?.invalidate()
-        if fingers.count < 2 || selectedFingerID != nil { return }
+    // MARK: Join window + picking
 
-        selectionTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: false) { _ in
+    private func maybeStartJoinTimer() {
+        guard joinTimer == nil else { return }
+        guard fingers.count >= 2 else { return }
+
+        joinTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
             self.pickWinner()
+            self.joinTimer = nil
         }
     }
 
     private func pickWinner() {
-        guard selectedFingerID == nil, !fingers.isEmpty else { return }
-
+        guard selectedFingerID == nil else { return }
+        guard fingers.count >= 2 else { return }
         guard let winner = fingers.values.randomElement() else { return }
-        
+
         selectedFingerID = winner.id
         rippleCenter = winner.location
         rippleRadius = 0
@@ -106,8 +119,10 @@ final class TouchView: UIView {
     private func fireHaptics() {
         let heavy = UIImpactFeedbackGenerator(style: .heavy)
         let rigid = UIImpactFeedbackGenerator(style: .rigid)
-        heavy.prepare(); rigid.prepare()
-        heavy.impactOccurred(intensity: 0.9)
+        heavy.prepare()
+        rigid.prepare()
+
+        heavy.impactOccurred(intensity: 1.0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
             rigid.impactOccurred(intensity: 1.0)
         }
@@ -128,8 +143,8 @@ final class TouchView: UIView {
     }
 
     @objc private func updatePulse() {
-        pulsePhase += 0.15
-        rippleRadius += 12
+        pulsePhase += 0.25   // faster winner pulse
+        rippleRadius += 14
     }
 
     @objc private func redraw() {
@@ -148,27 +163,36 @@ final class TouchView: UIView {
                 .foregroundColor: UIColor.white.withAlphaComponent(0.4)
             ]
             let size = text.size(withAttributes: attrs)
-            text.draw(at: CGPoint(x: bounds.midX - size.width/2, y: bounds.midY - size.height/2), withAttributes: attrs)
+            text.draw(
+                at: CGPoint(x: bounds.midX - size.width/2,
+                            y: bounds.midY - size.height/2),
+                withAttributes: attrs
+            )
             return
         }
 
         // Ripple
         if let center = rippleCenter {
-            ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.3).cgColor)
+            ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.25).cgColor)
             ctx.setLineWidth(2)
-            ctx.addEllipse(in: CGRect(x: center.x - rippleRadius, y: center.y - rippleRadius, width: rippleRadius*2, height: rippleRadius*2))
+            ctx.addEllipse(
+                in: CGRect(x: center.x - rippleRadius,
+                           y: center.y - rippleRadius,
+                           width: rippleRadius * 2,
+                           height: rippleRadius * 2)
+            )
             ctx.strokePath()
         }
 
         for f in fingers.values {
-            let winner = f.id == selectedFingerID
+            let isWinner = f.id == selectedFingerID
             let base: CGFloat = 44
-            let pulse = winner ? sin(pulsePhase) * 12 : 0
+            let pulse = isWinner ? sin(pulsePhase) * 14 : 0
             let r = base + pulse
-            let alpha: CGFloat = winner ? 1.0 : 0.3
-            let line: CGFloat = winner ? 7 : 3
+            let alpha: CGFloat = isWinner ? 1.0 : 0.3
+            let line: CGFloat = isWinner ? 7 : 3
 
-            if winner {
+            if isWinner {
                 ctx.setShadow(offset: .zero, blur: 25, color: UIColor.white.cgColor)
             } else {
                 ctx.setShadow(offset: .zero, blur: 0, color: nil)
@@ -176,7 +200,12 @@ final class TouchView: UIView {
 
             ctx.setStrokeColor(UIColor.white.withAlphaComponent(alpha).cgColor)
             ctx.setLineWidth(line)
-            ctx.addEllipse(in: CGRect(x: f.location.x - r, y: f.location.y - r, width: r*2, height: r*2))
+            ctx.addEllipse(
+                in: CGRect(x: f.location.x - r,
+                           y: f.location.y - r,
+                           width: r * 2,
+                           height: r * 2)
+            )
             ctx.strokePath()
         }
     }
